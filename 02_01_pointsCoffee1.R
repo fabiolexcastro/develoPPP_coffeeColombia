@@ -10,42 +10,15 @@ rm(list = ls())
 
 # Load data ---------------------------------------------------------------
 col <- st_read('../shapefile/base/MGN_DPTO_POLITICO.shp')
-occ_wrl <- read_csv('//dapadfs/workspace_cluster_9/Coffee_Cocoa2/_points/_global/Presence_data_all_2019_oct.csv')
-
-# Selecting the departments target ----------------------------------------
-occ_col <- occ_wrl %>% filter(Country == 'Colombia')
+occ <- read_csv('../tablas/points/points_all_v1.csv')
 dpt <- filter(col, DPTO_CNMBR %in% c('CAQUETÁ', 'CAUCA', 'META', 'RISARALDA', 'ANTIOQUIA', 'MAGDALENA', 'HUILA'))
-occ_col <- st_as_sf(occ_col, coords = c('Longitude', 'Latitude'))
-
-occ_cff <- read_csv('//dapadfs/workspace_cluster_9/Coffee_Cocoa2/_coffeeColombia/tbl/points/run1/points_all.csv')
-occ_cff <- st_as_sf(occ_cff, coords = c('Longitude', 'Latitude'))
-st_crs(occ_cff) <- st_crs(dpt)
-st_crs(occ_col) <- st_crs(dpt)
-occ_cff <- st_intersection(x = occ_cff, y = col)
-occ_col <- st_intersection(x = occ_col, y = col)
-
-# Join the both datasets
-occ_cff <- occ_cff %>% mutate(longitude = st_coordinates(occ_cff)[,1], latitude = st_coordinates(occ_cff)[,2])
-occ_col <- occ_col %>% mutate(longitude = st_coordinates(occ_col)[,1], latitude = st_coordinates(occ_col)[,2])
-occ_cff <- occ_cff %>% as.data.frame %>% dplyr::select(DPTO_CNMBR, longitude, latitude) %>% as_tibble()
-occ_col <- occ_col %>% as.data.frame %>% dplyr::select(DPTO_CNMBR, longitude, latitude) %>% as_tibble()
-occ <- rbind(occ_cff, occ_col)
-occ <- occ[!duplicated(occ),]
-
-occ %>% 
-  group_by(DPTO_CNMBR) %>% 
-  summarize(count = n()) %>% 
-  ungroup() %>% 
-  arrange(desc(count))
-
-occ <- occ %>% filter(DPTO_CNMBR %in% c('CAQUETÁ', 'CAUCA', 'META', 'RISARALDA', 'ANTIOQUIA', 'MAGDALENA', 'HUILA'))
 
 # Loading the mask --------------------------------------------------------
 msk <- raster('//dapadfs/workspace_cluster_9/Coffee_Cocoa2/_cocoaSouth/tif/climate/WORLDCLIM/crn/cnts/bio_1.asc') * 0
 msk <- raster::crop(msk, as(dpt, 'Spatial')) %>% raster::mask(., as(dpt, 'Spatial'))
 
 # Removing duplicated by cell ---------------------------------------------
-cellNum <- raster::extract(msk, occ[,c('longitude', 'latitude')], cellnumbers = T) 
+cellNum <- raster::extract(msk, occ[,c('x', 'y')], cellnumbers = T) 
 cells <- xyFromCell(msk, cellNum[,'cells'])
 dupvec <- duplicated(cells[,c('x', 'y')])
 occ_rmDupCell <- tbl_df(occ[!dupvec,])
@@ -54,13 +27,31 @@ occ_DupCell <- tbl_df(occ[dupvec,])
 write.csv(occ_rmDupCell, '../tablas/points/points_rmDup.csv', row.names = FALSE)
 
 # Table to shapefile
-coordinates(occ_rmDupCell) <- ~ longitude + latitude
-shapefile(occ_rmDupCell, '../shapefile/presences/presences_colombia_rmDupCell.shp')
+coordinates(occ_rmDupCell) <- ~ x + y
+shapefile(occ_rmDupCell, '../shapefile/presences/presences_colombia_rmDupCell.shp', overwrite = TRUE)
 
-occ_rmDupCell %>% 
-  as.data.frame %>% 
-  group_by(DPTO_CNMBR) %>% 
+# Extracting the name of the departments ----------------------------------
+dpt <- as(dpt, 'Spatial')
+occ_dpt <- raster::intersect(occ_rmDupCell, dpt)
+
+smm <- as.data.frame(occ_dpt) %>% 
+  dplyr::select(id, x, y, dpto = DPTO_CNMBR) %>% 
+  as_tibble() %>% 
+  mutate(gid = 1:nrow(.)) %>% 
+  group_by(dpto) %>% 
   summarise(count = n()) %>% 
-  ungroup()
+  ungroup() %>% 
+  arrange(desc(count)) %>% 
+  mutate(dpto = str_to_title(dpto)) %>% 
+  mutate(dpto = factor(dpto, levels = c('Huila', 'Cauca', 'Antioquia', 'Risaralda', 'Caquetá', 'Magdalena', 'Meta')))
 
 
+gg <- ggplot(data = smm, aes(x = dpto, y = count)) +
+  geom_col() +
+  labs(x = '', y = 'Coffee presences (n)', caption = 'Adapted from FNC, 2020') +
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10, angle = 90, hjust = 0.5),
+        axis.title.y = element_text(size = 12, face = 'bold')) +
+  scale_y_continuous(labels = function(k) format(k, big.mark = ",", scientific = FALSE))
+
+ggsave(plot = gg, filename = '../png/graphics/Coffee presences by Dpto.png' ,units = 'in', width = 9, height = 7, dpi = 300)
